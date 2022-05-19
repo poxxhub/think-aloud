@@ -22,6 +22,6 @@ iOS中的JavaScriptCore.framework也是对WebKit中`JavaScript Core`的封装。
 
 了解了WebKit的组成，也就明白了h5是通过什么来进行解析渲染的了。像一些比较知名的动态化解决方案，React Native的原理也是通过JavaScriptCore.framework为核心来运作的。
 
-## 引用
+## 参考
 
 https://en.wikipedia.org/wiki/WebKit
