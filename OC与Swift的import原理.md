@@ -1,30 +1,40 @@
-# Objective-C与Swift的混编原理
+# iOS中的import，看这篇就够了！
+
+关于iOS中的import，对于Objective-C来说，有`#import "..."`、`#import <...>`、`@import ...;`这几种方式，而对于Swift来说，只有`import ...`这一种方式。那么你了解这些import的区别吗？了解他们底层是如何查找头文件的吗？了解Objective-C文件和Swift文件是如何互相引用的吗？
 
 ## Objective-C中的头文件引用
 
 ### #include vs #import
 
-熟悉Objective-C的都知道，如果我在B类中，想使用A类的API，我们首先需要在B类中将A类的头文件引入进来，那么Objective-C中有几种头文件引用的方式呢？他们的区别在于什么呢？
+熟悉Objective-C的都知道，在同一个target下如果我在B类中，想使用A类的API，我们首先需要在B类中将A类的头文件引入进来，那么Objective-C中有几种头文件引用的方式呢？他们的区别在于什么呢？
 
-在Objective-C中我们可以使用的头文件引用方式有`include`、`import`这两种方式，它们的实现原理是什么呢?
+在Objective-C中我们可以使用的头文件引用方式有`#include`、`#import`这两种方式，`#include`做的事情其实就是简单的复制粘贴，将目标.h文件中的内容一字不落地拷贝到当前文件中，而`#import`实质上做的事情和`#include`是一样的，只不过`#import`多了一步判重逻辑，防止同一个头文件的重复引用。
 
-众所周知，`#include`、`#import`都是系统提供的两个预编译指令，所以我们可以用xcode提供的预编译功能来看一下这两个指令都做了什么。
-
-首先我们创建一个xcode工程，然后我们创建两个Objective-C类。
+我们可以创建一个简单的xcode工程来验证一下，我们创建两个Objective-C类。
 
 ![](images/OC与Swift混编/AClass.png)
 
 ![](images/OC与Swift混编/BClass.png)
 
-然后我们在BClass的.m文件中分别使用`#include`和`#import`的方式引入AClass的头文件。然后我们使用xcode的preprocess进行预编译的处理。
+然后我们在BClass的.m文件中分别使用`#include`和`#import`的方式引入AClass和BClass的头文件。然后我们使用Xcode的preprocess进行预编译的处理。
 
 ![](images/OC与Swift混编/xcodePreprocess.png)
 
-我们可以看到结果，发现两个头文件的引用方式完全一样。
+我们可以看到结果，发现两个头文件的引用方式其实都是复制粘贴。
 
 ![](images/OC与Swift混编/BClassImportPreprocess.png)
 
-他们做的事情就是简单的复制粘贴！将目标.h的文件的内容完全拷贝到当前文件中，并替换掉这句头文件引用。那么他们到底有什么区别呢，他们区别就是`#import`是`#include`预编译指令的微小创新，`#import`除了对目前头文件的复制粘贴之外，还添加了一个避免头文件重复引用的功能。大家可以自己分别使用`#include`和`#import`两次AClass的头文件，再使用preprocess功能查看下区别。
+### #import<...>
+
+我们来修复一下AClass.h中的报错，众所周知，Objective-C的类都需要直接或者间接的继承自基类NSObject，而NSObject是属于苹果Foundation框架中的，我们引用框架中的头文件一般都是使用`#import<...>`的方式来进行引用，所以我们把AClass.h和BClass.h补充完整。
+
+![](images/OC与Swift混编/AClassFoundation.png)
+
+然后我们重新对BClass.m文件进行Preprocess操作看下结果。
+
+![](images/OC与Swift混编/BCLassImportFoundationPreprocess.png)
+
+截图中内容上除了都继承自了NSObject与之前几乎差不多，但是你会发现代码行数从44行变成了惊人的三万多行！那截图的内容前面是什么东西呢？答案就是Foundation库中的头文件。
 
 ### #include 和 #import 的弊端与解决方案
 
@@ -81,7 +91,11 @@
 
 > Headermaps are used by the Xcode build system to communicate where those header files are.
 
-我们从clang的文档中
+我们从[clang的文档](https://clang.llvm.org/doxygen/classclang_1_1HeaderMap.html#details)中也可以看到为什么要用HeaderMap这个机制。
+
+> To the #include file resolution process, it basically acts like a directory of symlinks to files. Its advantages are that it is dense and more efficient to create and process than a directory of symlinks.
+
+
 
 ## 参考
 
