@@ -72,11 +72,15 @@ Clang Modules最大的特性之一是它不会污染上下文（context-free）�
 
 那么我们如何使用Clang Modules呢？
 
-#### 系统框架
+在[Clang的Modules文档](https://clang.llvm.org/docs/Modules.html#using-modules)中明确说过，要使用Clang Modules，需要在编译器参数中加入`-fmodules`参数。
 
-首先对于系统框架（iOS7或者MacOS10.9及以上），比如Foundation和UIKit等，Xcode在Build Settings中提供了一个设置 - Enable Modules。
+> To enable modules, pass the command-line flag `-fmodules`. This will make any modules-enabled software libraries available as modules as well as introducing any modules-specific syntax. Additional [command-line parameters](https://clang.llvm.org/docs/Modules.html#command-line-parameters) are described in a separate section later.
+
+但是我们编译运行都依赖Xcode来进行，所以Xcode在Build Settings中提供了一个设置 - Enable Modules。
 
 ![](images/OC与Swift混编/xcodeEnableModules.png)
+
+开启了这个选项之后，我们在编译时会自动在命令行参数中加入`-fmodules`参数开启Clang Modules。（话说这个Enable Modules的描述有些误导人，说这个设置项只会让system APIs以Clang Modules方式引入，但是这个参数是编译器参数中是否带上`-fmodules`参数的关键，所以会影响到当前target所引用的所有框架，包括Cocoapods创建的pod或者自己创建的Framework）
 
 将它设置为Yes后，所有的通过`#import<...>`引入的系统框架都会以Clang Modules的形式引入，这个设置默认为Yes，所以不需要进行额外设置。我们来看一下设置成Yes之后，BClass.m的Preprocess产物是什么样子的。
 
@@ -102,7 +106,9 @@ Clang Modules最大的特性之一是它不会污染上下文（context-free）�
 
 > If enabled, the product will be treated as defining its own module. This enables automatic production of LLVM module map files when appropriate, and allows the product to be imported as a module.
 
-如果我们开启了这个选项，当我们使用`#import <PodA/...>`来引用时会自动以Clang Module的方式进行引入。这个效果和`#import <Foundation/Foundation>`是类似的，大家可以用Preprocess自行试验下。如果你在Podfile中我们使用的是`use_frameworks!`，Defines Module设置项是默认为Yes，也会自动帮我们生成一个module.map文件。
+如果我们开启了这个选项，当我们使用`#import <PodA/...>`来引用时会自动以Clang Module的方式进行引入。这个效果和`#import <Foundation/Foundation>`是类似的，大家可以用Preprocess自行试验下。跟系统框架同样的，使用`@import PodA;`也是会以Clang Module的方式进行引入。我们需要注意的一点是，`@import ...;`的方式仅仅适用于开启了Defines Module的框架，如果引用不支持Clang Module的框架编译器会报Module '...' not found的错误。
+
+如果你在Podfile中我们使用的是`use_frameworks!`，Defines Module设置项是默认为Yes，也会自动帮我们生成一个module.map文件。
 
 通过上面的Xcode的描述可以看到开启Defines Module这个选项， 可以自动生成LLVM module map files，那么什么是module map呢？Clang编译器是怎么知道某个库是否应该以Module的方式引入呢？
 
