@@ -1,28 +1,88 @@
 # iOS中的import，看这篇就够了！
 
-关于iOS中的import，对于Objective-C来说，有`#import "..."`、`#import <...>`、`@import ...;`这几种方式，而对于Swift来说，只有`import ...`这一种方式。那么你了解这些import的区别吗？了解他们底层是如何查找头文件的吗？了解Objective-C文件和Swift文件是如何互相引用的吗？
+关于iOS中的import，对于Objective-C来说，有`#import "..."`、`#import <...>`、`@import ...;`这几种方式，而对于Swift来说，只有`import ...`这一种方式。那么你了解这些import的区别吗？了解他们底层是如何查找头文件的吗？了解Objective-C文件和Swift文件是如何互相引用的吗？本文将从Clang源码的角度，详细讲解头文件引用。
+
+（Clang是开源项目，所以我们通过调试Clang的源码，来看下Clang是如何查找Objective-C的头文件的。对Clang的源码调试感兴趣的，可以看下这篇[用Xcode调试Clang源码](用Xcode调试Clang源码.md)）
 
 ## Objective-C中的头文件引用
 
-### #include vs #import
+### 同一个target下的头文件引用
 
-熟悉Objective-C的都知道，在同一个target下如果我在B类中，想使用A类的API，我们首先需要在B类中将A类的头文件引入进来，那么Objective-C中有几种头文件引用的方式呢？他们的区别在于什么呢？
+熟悉Objective-C的都知道，在同一个target如果我在B类中，想使用A类的API，我们首先需要在B类中将A类的头文件引入进来，那么Objective-C中有几种头文件引用的方式呢？他们的区别在于什么呢？
 
-在Objective-C中我们可以使用的头文件引用方式有`#include`、`#import`这两种方式，`#include`做的事情其实就是简单的复制粘贴，将目标.h文件中的内容一字不落地拷贝到当前文件中，而`#import`实质上做的事情和`#include`是一样的，只不过`#import`多了一步判重逻辑，防止同一个头文件的重复引用。
+在Objective-C中我们可以使用的头文件引用方式有`#include "..."`、`#import "..."`这两种方式，它们做的事情其实就是简单的复制粘贴，将目标.h文件中的内容一字不落地拷贝到当前文件中。
 
-我们可以创建一个简单的xcode工程来验证一下，我们创建两个Objective-C类。
+我们可以创建一个简单的Xcode工程来验证一下，我们在同一个target下创建两个Objective-C类。（关于图片中的报错我们这里先忽略，后面会补充这里的内容）
 
 ![](images/OC与Swift混编/AClass.png)
 
 ![](images/OC与Swift混编/BClass.png)
 
-然后我们在BClass的.m文件中分别使用`#include`和`#import`的方式引入AClass和BClass的头文件。然后我们使用Xcode的preprocess进行预编译的处理。
+我们在BClass的.m文件中分别使用`#include`和`#import`的方式引入AClass和BClass的头文件。然后我们使用Xcode的preprocess进行预编译的处理。
 
 ![](images/OC与Swift混编/xcodePreprocess.png)
 
 我们可以看到结果，发现两个头文件的引用方式其实都是复制粘贴。
 
 ![](images/OC与Swift混编/BClassImportPreprocess.png)
+
+而`#import`实质上做的事情和`#include`是一样的，只不过`#import`是对`#include`的一层封装，并且多了一步判重逻辑，防止同一个头文件的重复引用。
+
+对于Clang来说，`#include`和`#import`这两个预编译指令，会经过词法分析（Lex）阶段进行拆解成token，通过命中不同的token枚举，来执行不同的方法。
+
+![](images/OC与Swift混编/clangIncludeToken.png)
+
+![](images/OC与Swift混编/clangImportToken.png)
+
+我们看一下HandleImportDirective方法内部。
+
+![](images/OC与Swift混编/clangHandleImportDirective.png)
+
+我们可以看到import确实是include的一层封装。但是这层封装里并没有代码判重的逻辑，仅仅只多了语言的校验。代码判重的逻辑是在HandleIncludeDirective内部调用的HandleHeaderIncludeOrImport方法中。
+
+![](images/OC与Swift混编/clangHandleHeaderIncludeOrImport.png)
+
+我们可以在HandleHeaderIncludeOrImport方法的源码中看到，在判重逻辑之前，还进行了头文件查找和校验等一系列操作，所以虽然`#import`防止了多次复制，但是多次重复import还是会多次查找头文件，所以平时代码中还是尽量避免编写重复的头文件`#import`
+
+有的文章说`#import`是对`#include`的一层封装，封装内部添加了判重逻辑。所以这句话是不严谨的。`#import`对`#include`的封装内部其实只是多了一个Objective-C语言的校验。
+
+#### 从Clang源码看同一个target下的头文件时怎么引用的
+
+我们使用刚才创建的Xcode工程，我们先将工程里target的Build Settings中的`Use Header Map`选项设为No，这个选项我们稍后在介绍。然后我们进行编译。然后我们从BClass.m的编译过程来看下Clang是怎么查找BClass.h和AClass.h这两个头文件的。
+
+我们先看一下Xcode中BClass.m的构建日志。
+
+![](images/OC与Swift混编/xcodeComplierBClass.png)
+
+我们将Clang的这一长串命令拷贝下来，粘贴到命令行中，然后结尾加上`-v`命令来打印更多的日志帮助我们分析。
+
+![](images/OC与Swift混编/terminalSearchPath.png)
+
+我们可以看到日志中`#include "..."`的路径是空的，所以我们猜测Clang是有默认的查找路径的，我们只能调试一下Clang的源码看下内部实现。我们在预编译器的查找文件方法（Preprocessor::LookupFile）中看到，确实会将当前文件（BClass.m）所在的目录作为查找路径进行查找头文件。
+
+![](images/OC与Swift混编/clangLookupFile.png)
+
+由于在文件夹中查找头文件需要访问Mac的文件夹系统来进行操作，在规模比较大的项目中，这种头文件查找机制的效率就会十分低下。Clang为了解决这个问题，在某个版本中推出了Header Map机制来优化头文件查找。
+
+> To the #include file resolution process, it basically acts like a directory of symlinks to files. Its advantages are that it is dense and more efficient to create and process than a directory of symlinks.
+
+#### Header Map
+
+那么Header Map是什么东西呢？从WWDC视频[Behind the Scenes of the Xcode Build Process](https://developer.apple.com/videos/play/wwdc2018/415/)上有提到HeaderMap。
+
+> Headermaps are used by the Xcode build system to communicate where those header files are.
+
+简单的来讲，Header Map就是将头文件和头文件的地址生成一个映射文件hmap，Clang在头文件查找时会优先读取hmap中的内容，进行头文件地址的查找。hmap本身是一个二进制文件，访问和查找效率比访问Mac文件夹系统会更高效。而开启Header Map机制只需要修改Build Settings中的`Use Header Map`选项就可，这个机制是默认开启的。
+
+我们将Xcode工程里target的Build Settings中的`Use Header Map`选项改回为Yes，重新编译一下。我们看一下构建日志，会发现Xcode在编译源文件之前会提前生成hmap文件。
+
+![](images/OC与Swift混编/xcodeWriteHeaderMap.png)
+
+我们还是将BClass.h的Clang命令加上`-v`粘贴到命令行中。
+
+![](images/OC与Swift混编/terminalHmapSearchPath.png)
+
+可以看到`#include "..."`的路径变成了两个hmap文件，我们使用hmap工具，来查看下这两个hmap文件。
 
 ### #import <...>
 
@@ -126,6 +186,10 @@ Clang Module是对框架的抽象描述，而module map则是这个描述的具�
 
 这里描述了Foundation框架是一个framework类型的module，它的头文件时伞形头文件Foundation.h，该模块包含的任何内容都将自动重新导出（export *），同时modulemap还支持模块的嵌套定义（module ... { }），这里Foudation描述了所有的子模块包含的内容都自动导出。更多的modulemap的语法可以看下[Clang官方文档](https://clang.llvm.org/docs/Modules.html#module-map-language)。
 
+### Clang是如何查找Objective-C头文件的
+
+首先Clang的词法分析，分析出`#`开头的语句时，会调用预处理器的HandleDirective方法处理`#`后面的单词，如果后面的单词是`import`，就会调用HandleImportDirective方法，在HandleImportDirective方法中，可以看到只是调用了一个是否是ObjC的校验，校验通过后，还是调用的`#include`的HandleIncludeDirective方法，最终的实现在HandleHeaderIncludeOrImport方法中。
+
 ## Xcode是如何查找头文件的
 
 根据WWDC2018中提到的，我们可以通过Xcode的构建信息来看出一些内容。
@@ -142,13 +206,7 @@ Clang Module是对框架的抽象描述，而module map则是这个描述的具�
 
 ### HeaderMap
 
-从WWDC视频[Behind the Scenes of the Xcode Build Process](https://developer.apple.com/videos/play/wwdc2018/415/)上有提到HeaderMap
-
-> Headermaps are used by the Xcode build system to communicate where those header files are.
-
-我们从[clang的文档](https://clang.llvm.org/doxygen/classclang_1_1HeaderMap.html#details)中也可以看到为什么要用HeaderMap这个机制。
-
-> To the #include file resolution process, it basically acts like a directory of symlinks to files. Its advantages are that it is dense and more efficient to create and process than a directory of symlinks.
+> 
 
 
 
