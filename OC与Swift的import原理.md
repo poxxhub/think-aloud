@@ -6,7 +6,7 @@
 
 ## Objective-C中的头文件引用
 
-### 同一个target下的头文件引用
+### #import "..."
 
 熟悉Objective-C的都知道，在同一个target如果我在B类中，想使用A类的API，我们首先需要在B类中将A类的头文件引入进来，那么Objective-C中有几种头文件引用的方式呢？他们的区别在于什么呢？
 
@@ -28,17 +28,21 @@
 
 而`#import`实质上做的事情和`#include`是一样的，只不过`#import`是对`#include`的一层封装，并且多了一步判重逻辑，防止同一个头文件的重复引用。
 
+#### 从Clang源码看头文件引用过程
+
+接下来从我们从Clang源码中看一下同一个target下的头文件是怎么引用的。
+
 对于Clang来说，`#include`和`#import`这两个预编译指令，会经过词法分析（Lex）阶段进行拆解成token，通过命中不同的token枚举，来执行不同的方法。
 
 ![](images/OC与Swift混编/clangIncludeToken.png)
 
 ![](images/OC与Swift混编/clangImportToken.png)
 
-我们看一下HandleImportDirective方法内部。
+我们看一下`HandleImportDirective`方法内部。
 
 ![](images/OC与Swift混编/clangHandleImportDirective.png)
 
-我们可以看到import确实是include的一层封装。但是这层封装里并没有代码判重的逻辑，仅仅只多了语言的校验。代码判重的逻辑是在HandleIncludeDirective内部调用的HandleHeaderIncludeOrImport方法中。
+我们可以看到import确实是include的一层封装。但是这层封装里并没有代码判重的逻辑，仅仅只多了语言的校验。代码判重的逻辑是在`HandleIncludeDirective`内部调用的`HandleHeaderIncludeOrImport`方法中。
 
 ![](images/OC与Swift混编/clangHandleHeaderIncludeOrImport.png)
 
@@ -46,7 +50,13 @@
 
 有的文章说`#import`是对`#include`的一层封装，封装内部添加了判重逻辑。所以这句话是不严谨的。`#import`对`#include`的封装内部其实只是多了一个Objective-C语言的校验。
 
-#### 从Clang源码看同一个target下的头文件时怎么引用的
+后面`HandleHeaderIncludeOrImport`方法会进行头文件的查找，查找到头文件之后，预编译器会调用`EnterSourceFile`方法进行复制粘贴。
+
+![](images/OC与Swift混编/clangEnterSourceFile.png)
+
+#### 深入头文件查找
+
+我们深入来看下头文件的查找过程。
 
 我们使用刚才创建的Xcode工程，我们先将工程里target的Build Settings中的`Use Header Map`选项设为No，这个选项我们稍后在介绍。然后我们进行编译。然后我们从BClass.m的编译过程来看下Clang是怎么查找BClass.h和AClass.h这两个头文件的。
 
@@ -58,11 +68,11 @@
 
 ![](images/OC与Swift混编/terminalSearchPath.png)
 
-我们可以看到日志中`#include "..."`的路径是空的，所以我们猜测Clang是有默认的查找路径的，我们只能调试一下Clang的源码看下内部实现。我们在预编译器的查找文件方法（Preprocessor::LookupFile）中看到，确实会将当前文件（BClass.m）所在的目录作为查找路径进行查找头文件。
+我们可以看到日志中`#include "..."`的路径是空的，所以我们猜测Clang是有默认的查找路径的，我们调试一下Clang的源码看下内部实现。我们在预编译器的查找文件方法（Preprocessor::LookupFile）中看到，确实会将当前文件（BClass.m）所在的目录作为查找路径进行查找头文件。所以在没有Header Map的年代，如果我们头文件在不同的文件夹目录下，引入时需要同时去指定他的文件夹。
 
 ![](images/OC与Swift混编/clangLookupFile.png)
 
-由于在文件夹中查找头文件需要访问Mac的文件夹系统来进行操作，在规模比较大的项目中，这种头文件查找机制的效率就会十分低下。Clang为了解决这个问题，在某个版本中推出了Header Map机制来优化头文件查找。
+早期的大型项目通常会用文件夹来对代码进行分类，每次引入不同文件夹的头文件需要指定所在的文件夹路径，十分繁琐。并且在文件夹中查找头文件需要访问Mac的文件夹系统来进行操作，在规模比较大的项目中，这种头文件查找机制的效率就会十分低下。Clang为了解决这些问题，在某个版本中推出了Header Map机制来优化头文件查找。
 
 > To the #include file resolution process, it basically acts like a directory of symlinks to files. Its advantages are that it is dense and more efficient to create and process than a directory of symlinks.
 
@@ -82,7 +92,46 @@
 
 ![](images/OC与Swift混编/terminalHmapSearchPath.png)
 
-可以看到`#include "..."`的路径变成了两个hmap文件，我们使用hmap工具，来查看下这两个hmap文件。
+可以看到`#include "..."`的路径变成了两个hmap文件，我们使用[hmap命令行工具](https://github.com/milend/hmap)，来查看下这两个hmap文件。
+
+![](images/OC与Swift混编/terminalPrintDotSearchPath.png)
+
+可以看到`HeaderDemo-project-headers.hmap`文件是target中所有头文件的及其路径的映射表。
+
+笔者没有找到hmap的具体生成逻辑的源码（有大佬知道的话麻烦联系下我~），我们可以根据结果来猜测，Xcode会将target目录下的所有.h文件及其地址生成hmap，那Xcode从哪里存的.h文件的地址呢？答案是在工程文件xcodeproj内project.pbxproj文件中的`PBXFileReference section`存了所有源文件的地址，我们在target内添加或者删除文件，修改的也是这个project.pbxproj文件。所以Xcode会将`PBXFileReference section`里的所有.h头文件及其地址生成映射写入hmap中。大家可以删除`PBXFileReference section`内的指定头文件然后重新编译和打印hmap来验证这个猜想。
+
+我们知道了Header Map就是头文件和地址的映射之后，我们看一下Clang是怎么通过Header Map查找头文件的。首先我们将上面的Clang命令格式化成更易读的格式。
+
+![](images/OC与Swift混编/terminalClangDemo.png)
+
+通过[Clang命令行参数文档](https://clang.llvm.org/docs/ClangCommandLineReference.html)可以看到-I和-iquote都是文件的搜索路径，-F是framework的搜索路径，所以我们传递给Clang九个搜索路径。那么-I和-iquote有什么区别呢？
+
+![](images/OC与Swift混编/clangArgsQuoted.png)
+
+从Clang源码可以看到-iquote参数的路径是放在最前面进行查找，所以看起来Clang会优先查找Xcode为我们生成的项目的hmap文件。别急，事实还真的不是这样。Clang确实会优先查找hmap文件，但是在查找hmap文件之前，Clang还做了额外的查找。Clang会将要查找的头文件拼上当前编译的.m文件的路径，先查找一次头文件是否是在当前路径下。
+
+![](images/OC与Swift混编/clangLookupFile.png)
+
+（先在Includers中添加当前目录）
+
+![](images/OC与Swift混编/clangLookupFileCurDir.png)
+
+（调用`getFileAndSuggestModule`在Includer中查找头文件）
+
+为什么要先查找一次当前路径，我猜测原因有两点：
+
+1. 兼容没有启用Header Map的逻辑，因为不启用Header Map就是基于当前目录查找头文件。
+2. 如果大型项目中，hmap的头文件映射会非常多，从hmap中定位要查找的头文件也会需要一定时间。如果能通过头文件的绝对路径先去查找一下，会节省从hmap定位头文件的时间。
+
+如果在当前目录没有找到头文件，才会进行从搜索路径列表中开始查找。
+
+![](images/OC与Swift混编/clangLookupFileSearchPath.png)
+
+还记得之前Clang把hmap放在了搜索路径列表中的最前面了吗，所以Clang将会从hmap开始进行搜索。我们来看下Clang是怎么从hmap中定位到要查找的头文件的。
+
+![](images/OC与Swift混编/clangLookupFileHeaderMap.png)
+
+虽然注释中说是从哈希表中查找，但是从代码中看到却是通过迭代了哈希表中所有的key，然后匹配到之后再从哈希表中拿到地址，所以时间复杂度不是O(1)而是O(n)的。
 
 ### #import <...>
 
