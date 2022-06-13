@@ -6,7 +6,7 @@
 
 ## clone
 
-我们要调试Clang源码，首先我们需要下载[源码](https://github.com/llvm/llvm-project)，由于Clang的源码非常大，下载过程比较长，因为我们只需要进行源码的调试也不需要进行代码的贡献，所以我们可以使用浅克隆。
+我们要调试Clang源码，首先我们需要下载[源码](https://github.com/llvm/llvm-project)，由于Clang的源码非常大，下载过程比较长，因为我们只需要进行源码的调试也不需要进行代码的贡献，所以我们可以使用浅克隆。如果需要指定版本，可以加`-b`指定分支。
 
 `git clone --depth=1 https://github.com/llvm/llvm-project.git`
 
@@ -35,7 +35,7 @@ cmake完成之后我们在build目录中就可以看到一个LLVM.xcodeproj的�
 
 ![](Images/Xcode调试Clang/XcodeClangShemeArgs.png)
 
-比如我们这里添加--help参数先简单测试下。然后我们点击运行，第一次运行的时间会非常久！这里有点坑，不过后面每次运行都会走增量构建，时间就很快了。
+比如我们这里添加--help参数先简单测试下。然后我们点击运行，第一次运行的时间会非常久！因为要构建Clang自己及其所有的依赖，不过后面每次运行都会走增量构建，时间就很快了。
 
 运行成功后我们会在控制台，看到输出的结果。
 
