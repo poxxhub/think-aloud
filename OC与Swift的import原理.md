@@ -92,24 +92,7 @@
 
 从Clang源码可以看到-iquote参数的路径是放在最前面进行查找，所以看起来Clang会优先查找Xcode为我们生成的项目的hmap文件。别急，事实还真的不是这样。Clang确实会优先查找hmap文件，但是在查找hmap文件之前，Clang还做了额外的查找。Clang会将要查找的头文件拼上当前编译的.m文件的路径，先查找一次头文件是否是在当前路径下。
 
-![](images/OC与Swift混编/clangLookupFile.png)
 
-（先在Includers中添加当前目录）
-
-![](images/OC与Swift混编/clangLookupFileCurDir.png)
-
-（调用`getFileAndSuggestModule`在Includer中查找头文件）
-
-为什么要先查找一次当前路径，我猜测原因有两点：
-
-1. 兼容没有启用Header Map的逻辑，因为不启用Header Map就是基于当前目录查找头文件。
-2. 如果大型项目中，hmap的头文件映射会非常多，从hmap中定位要查找的头文件是O(n)的时间复杂度，也需要一定时间。如果能通过头文件的绝对路径先去查找一下，会节省从hmap定位头文件的时间。
-
-如果在当前目录没有找到头文件，才会进行从搜索路径列表中开始查找。
-
-![](images/OC与Swift混编/clangLookupFileSearchPath.png)
-
-还记得之前Clang把hmap放在了搜索路径列表中的最前面了吗，所以Clang将会从hmap开始进行搜索。我们来看下Clang是怎么从hmap中定位到要查找的头文件的。
 
 ![](images/OC与Swift混编/clangLookupFileHeaderMap.png)
 
@@ -247,17 +230,17 @@ Clang要进行头文件的查找，必然需要一些路径。Xcode会通过Buil
 
 ![](images/OC与Swift混编/clangGenerateSearchList.png)
 
-整个过程由图所示，Clang解析完命令行参数后，会将所有的路径保存在`UserEntries`数组中，同时还会向数组中添加系统路径，分别是SDKROOT路径加上`/usr/local/include`和`/usr/include`，以及Clang编译器所在的目录中的include文件夹路径。
+整个过程由图所示，Clang解析完命令行参数后，会将所有的路径保存在`HeaderSearchOptions.UserEntries`数组中，同时还会向数组中添加系统路径，分别是SDKROOT路径加上`/usr/local/include`和`/usr/include`，以及Clang编译器所在的目录中的include文件夹路径。
 
-拿到解析参数后的路径列表进行进一步的处理，我称之为Filter，这个步骤中，会针对文件夹的路径去过滤掉不存在的文件夹路径，针对非文件夹路径只选取hmap文件，最后再添加一个很重要的系统路径`${SDKROOT}/System/Library/Frameworks`（这个路径在不同的平台各不相同），我们使用到的几乎所有的系统framework，比如Foundation、UIKit等都存在这个目录中。
+然后对解析参数后的路径列表`UserEntries`进行进一步的处理，我称之为Filter，这个步骤中，针对文件夹的路径会去过滤掉不存在的文件夹路径，针对非文件夹路径只选取hmap文件，最后再添加一个很重要的系统路径`${SDKROOT}/System/Library/Frameworks`（这个路径在不同的平台各不相同），我们使用到的几乎所有的系统framework，比如Foundation、UIKit等都存在这个目录中。将最终Filter后的结果保存在`InitHeaderSearch.IncludePath`中。
 
-最后一步就是针对上一步的列表进行排序和去重，排序的顺序是`-iquote` > `Angled`(用户传进来的-I-F等) > `system`(Clang生成的系统路径)。这也是为什么Xcode会将生成的Header Map文件使用`-quote`传入，让开发者定义的同一个target下的头文件查找效率更高。
+最后一步就是针对上一步的列表`IncludePath`进行排序和去重，生成最终的`SearchList`，排序的顺序是`-iquote` > `Angled`(用户传进来的-I-F等) > `system`(Clang生成的和命令行传进来的系统路径)。这也是为什么Xcode会将生成的Header Map文件使用`-iquote`传入，让同一个target下的头文件查找效率更高。
 
 整个过程所涉及到的Clang的源码方法都已在图中标注，有兴趣的可以自行看下源码实现。
 
 ### import vs include
 
-对于Clang来说，`#include`和`#import`这两个预编译指令，会经过词法分析（Lex）阶段拆解成token，通过命中不同的token枚举，来执行不同的方法。
+对于Clang来说，`#include`和`#import`这两个预编译指令，会经过词法分析（Lex）阶段拆解成token，通过命中不同的token枚举，来执行不同的方法。（至于`@import`走的不是这里的判断，后面会单独讲）
 
 ![](images/OC与Swift混编/clangLexToken.png)
 
@@ -269,11 +252,115 @@ Clang要进行头文件的查找，必然需要一些路径。Xcode会通过Buil
 
 ![](images/OC与Swift混编/clangHandleHeaderIncludeOrImport.png)
 
-我们可以在`HandleHeaderIncludeOrImport`方法的源码中看到，在判重逻辑之前，还进行了头文件查找和校验等一系列操作，所以虽然`#import`防止了多次复制，但是重复import还是会多次查找头文件，所以平时代码中还是尽量避免编写重复的头文件`#import`。
+我们可以在`HandleHeaderIncludeOrImport`方法的源码中看到，在判重逻辑之前，还进行了头文件查找和校验等一系列操作，所以虽然`#import`防止了重复引用，但是重复import还是会多次查找头文件，所以平时代码中还是尽量避免编写重复的头文件`#import`。
 
 有的文章说`#import`是对`#include`的一层封装，封装内部添加了判重逻辑。所以这句话是不严谨的。`#import`对`#include`的封装内部其实只是多了一个Objective-C语言的校验。
 
-### #import "..."
+### 头文件查找
+
+我们可能会简单的认为`#import`的头文件查找就是Clang通过路径列表`SearchList`一个个的查找头文件，其实并没有我们想的这么简单。我们还可能会认为`#import "..."`与Clang Module无关，其实这也是不正确的。我们来详细看下Clang是怎么查找头文件的。
+
+首先对于`#import "..."`方式引入的头文件，Clang会先在当前编译的.m源文件的路径中查找一次头文件，查找的方式也很简单，就是将源文件所在的文件夹目录拼上目标头文件，看下该文件是否存在。
+
+![](images/OC与Swift混编/clangLookupFile.png)
+
+（先在Includers中添加当前源文件的目录，如果源文件不存在会判断是否是main文件）
+
+![](images/OC与Swift混编/clangLookupFileCurDir.png)
+
+（调用`getFileAndSuggestModule`在Includer中查找头文件，`#import <...>`引入的头文件isAngled是true）
+
+从上图的注释也可以看到，`#import <...>`引入的头文件会跳过这一步。如果当前目录没有找到的话，才会通过路径列表`SearchList`进行一个个的查找。为什么要先查找一次当前路径，我猜测是因为兼容没有启用Header Map的逻辑，因为不启用Header Map就是基于当前目录查找头文件。
+
+查找到头文件之后，还会判断能否以Clang Module的形式引用。这里的判断与后面Normal Dir中的判断是一样的，所以会在后面讲如何判断能否以Clang Module的形式引用。
+
+在`SearchList`查找过程中，对`#import <...>`引入的头文件查找做了特殊的处理，会跳过-iquote指定的路径。
+
+![](images/OC与Swift混编/clangLookupAngleIndex.png)
+
+通过判断是否是<...>（isAngled）来确定`SearchList`的初始下标从0还是AngledDirIdx开始。
+
+![](images/OC与Swift混编/clangAngledDirIdx.png)
+
+由`SetSearchPaths`源码可知，AngledDirIdx就是-iquote路径后面的位置。
+
+在头文件查找路径列表`SearchList`中，Clang会将每个路径分类，一共分为三类。
+
+* Framework Dir：常见的`-F`传入的文件夹路径。
+* Normal Dir：常见的`-I、-iquote`传入的非hmap的文件夹路径。
+* Header Map：hmap文件路径。
+
+不管是哪个SearchList路径查找到了头文件，都会将该路径的下标缓存下来，如果后续有重复头文件的查找，会直接从缓存的下标路径进行查找。
+
+#### Framework Dir
+
+Framework Dir的头文件查找首先先会校验要查找的头文件是否是`xxx/xxx`格式。
+
+![](images/OC与Swift混编/clangFrameworkDirNposCheck.png)
+
+然后校验Framework是否存在。将满足FrameworkName/FileName.h格式的头文件的FrameworkName和FileName.h拆分出来，并将Dir的路径+FrameworkName+.framework/拼接成Framework的绝对路径，验证该Framework是否存在。
+
+验证Framework存在后，开始查找FileName.h是否包含在Framework中，会分别查找Framework内的Headers和PrivateHeaders两个文件夹。
+
+![](images/OC与Swift混编/clangLookupFrameworkHeader.png)
+
+如果查找到了头文件就会走到最后一步判断能否以Clang Module的形式引用。首先先判断缓存中的Module是否存在，如果没有命中缓存就走正常的Module加载过程。先去查找Module Map文件，分别按顺序查找FrameworkName.framework/Modules/module.modulemap、FrameworkName.framework/module.map、FrameworkName.framework/Modules/module.private.modulemap。
+
+![](images/OC与Swift混编/clangLookupModuleMap.png)
+
+然后解析和加载Module Map文件，解析期间还会验证Module Map的header或者umbrella header是否包含FileName.h。最后一切顺利，就将Module Map文件路径、生成的Module等都存入缓存中，避免重复的Module解析和加载。
+
+#### Normal Dir
+
+Normal Dir的头文件查找分为两步，首先将查找路径拼接头文件名字组成头文件的绝对路径，然后查找头文件是否存在。
+
+![](images/OC与Swift混编/clangNormalDirLookupFile.png)
+
+(图中的FileName就是拼接好的绝对路径地址)
+
+如果头文件存在，Clang还会进一步判断能否以Clang Module的形式引用。
+
+![](images/OC与Swift混编/clangLoadNormalDirModule.png)
+
+这里的判断能否以Clang Module的形式引用的过程，与Framework Dir中的过程有一些区别。
+
+* Normal Dir的不会去找Module的缓存。我猜测是因为Normal Dir查找的大多都不是Framework的头文件，Framework Dir的Module缓存可以以FrameworkName作为Key缓存整个Framework的Module，整个Framework内任意的头文件查找都可以命中缓存，而Normal Dir以头文件名为Key缓存整个Module的话效率太低了，没什么意义。
+* 在查找Module Map文件时，因为不是Framework路径，所以不会查找Modules/目录，只会查找Normal Dir/module.map和Normal Dir/module.modulemap这两个路径。
+
+#### Header Map
+
+我们来看下Clang是怎么从hmap中定位到要查找的头文件的。
+
+![](images/OC与Swift混编/clangLookupFileHeaderMap.png)
+
+其实就是从哈希表中查找，时间复杂度是O(1)的，效率极高。我们查看一下`HashHMapKey`方法看下这个哈希表的哈希算法。
+
+![](images/OC与Swift混编/clangHashMapKeyHash.png)
+
+哈希算法是将头文件每个字母的小写字母的ASCII值乘以13的累加作为哈希值。这也是我们为什么尽量避免多个头文件名称字母相同大小写不同。笔者测试了Header Map文件的创建过程中，对于相同哈希值的不同头文件，只会添加第一个到哈希表中。
+
+如果在hmap中找到了映射的路径，这里会做一个是否是framework include的判断。如果不是framework include就查找这个路径中的文件是否存在。
+
+![](images/OC与Swift混编/clangCheckFrameworkInclude.png)
+
+一般来说这里framework include的判断仅针对我们在项目中手动创建的Framework。因为我们手动创建的Framework的头文件也会被写入hmap中，但是对应的地址仅仅是FrameworkName/FileName。
+
+![](images/OC与Swift混编/terminalHmapFrameworkPath.png)
+
+然后在hmap和后续的`SearchList`中查找FrameworkName/FileName，这种情况最后一般都会命中Framework的查找路径。这个机制其实就是Clang帮我们把`#import "FrameworkFileName.h"`自动帮我们补全成了`#import <FrameworkName/FileName.h>`，这也是`#import "..."`为什么也可以引入我们自己创建的Framework的头文件的原因。上面讲过`#import <FrameworkName/FileName.h>`是可以使用Clang Module的特性，所以这种情况使用`#import "FrameworkFileName.h"`也是可以使用Clang Module特性的。有的文章说Clang Module只能通过`#import <...>`和`@import ...;`方式来使用也是不严谨的。
+
+### 总结#import "..."和#import <...>
+
+基于上面所说的头文件查找，我们总结下`#import "..."`和`#import <...>`都是怎么查找头文件的。
+
+对于`#import "..."`方式引入的头文件，Clang会先在当前编译的.m源文件的路径中查找一次头文件，查找中还会尝试以Clang Module方式来引用。
+
+然后再`SearchList`中顺序查找。
+
+* 如果Header Map中找到路径，则返回目标路径的头文件。如果找到的是相对路径（xxx/xxx.h格式），则会在后续的Normal Dir和Framework Dir中查找xxx/xxx.h。
+* 如果
+
+#### import "..."
 
 `#import "..."`一般有以下使用场景：
 
@@ -281,31 +368,23 @@ Clang要进行头文件的查找，必然需要一些路径。Xcode会通过Buil
 2. 引用自己创建的Framework内的头文件。例如#import "FrameworkName/FileB.h"或者#import "FileB.h"
 3. 引用Cocoapods并且使用use_modular_headers配置创建的Pod内的头文件。例如#import "PodName/FileC.h"或者#import "FileC.h"
 
-我们可能会简单的认为`#import "..."`的头文件查找就是Clang通过路径列表SearchList一个个的查找头文件，其实并没有我们想的这么简单。
+
+
+* 
+
+1. 
+
+
 
 我把Clang通过`#import "..."`方式引用的头文件的查找过程，做了简单的流程图。
 
 ![](images/OC与Swift混编/clangSearchHeader.png)
 
-首先Clang会先在当前编译的.m源文件的路径中查找一次头文件，查找的方式也很简单，就是将源文件所在的文件夹目录拼上目标头文件，看下该文件是否存在。如果当前目录没有找到的话，才会通过路径列表SearchList进行一个个的查找。
+首先Clang会先在当前编译的.m源文件的路径中查找一次头文件，查找的方式也很简单，就是将源文件所在的文件夹目录拼上目标头文件，看下该文件是否存在。如果当前目录没有找到的话，才会通过路径列表SearchList进行一个个的查找。为什么要先查找一次当前路径，我猜测是因为兼容没有启用Header Map的逻辑，因为不启用Header Map就是基于当前目录查找头文件。
 
-为什么要先查找一次当前路径，我猜测是因为兼容没有启用Header Map的逻辑，因为不启用Header Map就是基于当前目录查找头文件。
+还记得Clang生成路径列表SearchList时把`-iquote`放在了最前面了吗，所以Clang将会从`-iquote`路径开始进行查找。Xcode对当前target的头文件生成的hmap就是使用`-iquote`传递的，
 
-还记得Clang生成路径列表SearchList时把hmap放在了最前面了吗，所以Clang将会从hmap开始进行搜索。我们来看下Clang是怎么从hmap中定位到要查找的头文件的。
 
-![](images/OC与Swift混编/clangLookupFileHeaderMap.png)
-
-其实就是从哈希表中查找，时间复杂度是O(1)的，效率极高。我们查看一下HashHMapKey方法看下这个哈希表的哈希算法。
-
-![](images/OC与Swift混编/clangHashMapKeyHash.png)
-
-哈希算法使用的是头文件每个字母的小写字母的ASCII值乘以13的累加作为哈希值。这也是我们为什么尽量避免多个头文件名称字母相同大小写不同。笔者测试了Header Map文件的创建过程中，对于相同哈希值的不同头文件，只会添加第一个到哈希表中。
-
-如果在hmap中找到了映射的路径，这里会做一个是否是framework include的判断。如果不是framework include就查找这个路径中的文件是否存在。
-
-![](images/OC与Swift混编/clangCheckFrameworkInclude.png)
-
-这里framework include的判断仅仅是针对我们在项目中手动创建的Framework，在使用场景中提到的#import "FileB.h"就会命中这种情况。因为我们手动创建的Framework的头文件也会被写入hmap中，但是对应的地址仅仅是FrameworkName/FileName。
 
 ![](images/OC与Swift混编/terminalHmapFrameworkPath.png)
 
