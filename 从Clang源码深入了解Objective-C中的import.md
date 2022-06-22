@@ -24,7 +24,7 @@
 
 我们可以看到结果，发现两个头文件的引用方式其实都是复制粘贴。
 
-![](Images/clang源码看import/BClassImportPreprocess.png)
+![](Images/clang源码看import/BClassImportCopyPreprocess.png)
 
 而`#import`实质上做的事情和`#include`是一样的，只不过`#import`是对`#include`的一层封装，并且多了一步判重逻辑，防止同一个头文件的重复引用。
 
@@ -88,7 +88,7 @@
 
 然后我们重新对BClass.m文件进行Preprocess操作看下结果。
 
-![](Images/clang源码看import/BCLassImportFoundationPreprocess.png)
+![](Images/clang源码看import/BClassFoundationPreprocess.png)
 
 你会发现只是多了一行`#import <Foundation/Foundation.h>`，预编译后代码行数从45行变成了惊人的三万多行！从32268行的注释就能看出来，前面的代码全是Foundation库中的头文件。苹果的Framework推行的是伞形头文件，Foundation.h文件中包含了Foundation库中所有暴露出来的头文件，所以import了Foundation.h就会把整个Foundation库的头文件都import了进来，导致预编译后的内容超级多。所以将头文件简单的复制粘贴会有很多问题。
 
