@@ -246,7 +246,11 @@ Clang要进行头文件的查找，必然需要一些路径。Xcode会通过Buil
 
 我们可能会简单的认为`#import`的头文件查找就是Clang通过路径列表`SearchList`一个个的查找头文件，其实并没有我们想的这么简单。我们还可能会认为`#import "..."`与Clang Module无关，其实这也是不正确的。我们来详细看下Clang是怎么查找头文件的。
 
-首先对于`#import "..."`方式引入的头文件，Clang会先在当前编译的.m源文件的路径中查找一次头文件，查找的方式也很简单，就是将源文件所在的文件夹目录拼上目标头文件，看下该文件是否存在。
+做了一个简单的流程图来表示`#import "..."`、`#import ".../..."`、`#import <...>`、`#import <.../...>`这四种头文件引用的查找过程。
+
+![](Images/clang源码看import/clangImportFlow.png)
+
+首先对于`#import "..."`和`#import ".../..."`方式引入的头文件，Clang会先在当前编译的.m源文件的路径中查找一次头文件，查找的方式也很简单，就是将源文件所在的文件夹目录拼上目标头文件，看下该文件是否存在。
 
 ![](Images/clang源码看import/clangLookupFile.png)
 
@@ -254,13 +258,13 @@ Clang要进行头文件的查找，必然需要一些路径。Xcode会通过Buil
 
 ![](Images/clang源码看import/clangLookupFileCurDir.png)
 
-（调用`getFileAndSuggestModule`在Includer中查找头文件，`#import <...>`引入的头文件isAngled是true）
+（调用`getFileAndSuggestModule`在Includer中查找头文件，`#import <.../...>`引入的头文件isAngled是true）
 
-从上图的注释也可以看到，`#import <...>`引入的头文件会跳过这一步。如果当前目录没有找到的话，才会通过路径列表`SearchList`进行一个个的查找。为什么要先查找一次当前路径，我猜测是因为兼容没有启用Header Map的逻辑，因为不启用Header Map就是基于当前目录查找头文件。
+从上图的注释也可以看到，`#import <.../...>`引入的头文件会跳过这一步。如果当前目录没有找到的话，才会通过路径列表`SearchList`进行一个个的查找。为什么要先查找一次当前路径，我猜测是因为兼容没有启用Header Map的逻辑，因为不启用Header Map就是基于当前目录查找头文件。
 
 查找到头文件之后，还会判断能否以Clang Module的形式引用。这里的判断与后面Normal Dir中的判断是一样的，所以会在后面讲如何判断能否以Clang Module的形式引用。
 
-在`SearchList`查找过程中，对`#import <...>`引入的头文件查找做了特殊的处理，会跳过-iquote指定的路径。
+在`SearchList`查找过程中，对`#import <.../...>`引入的头文件查找做了特殊的处理，会跳过-iquote指定的路径。
 
 ![](Images/clang源码看import/clangLookupAngleIndex.png)
 
