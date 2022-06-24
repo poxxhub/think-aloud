@@ -50,6 +50,10 @@ VSCode中也有类似的配置（需要创建一个.vscode/launch.json文件）
 
 ![](Images/开发cocoapods-plugins/vscodeDebugConfig.png)
 
+上面两个配置我们的脚本目录都填写pod命令的地址，我们可以从`pod env`命令中拿到这个地址。
+
+![](Images/开发cocoapods-plugins/podDir.png)
+
 配置完之后我们就可以调试了，我们可以在cocoapods-plugin.rb文件里打个断点。然后运行IDE的调试功能，我们就会发现程序会停在断点的位置，还可以看到相关的堆栈信息。
 
 ![](Images/开发cocoapods-plugins/rubyMineDebugBP.png)
