@@ -70,7 +70,7 @@
 
 可以看到`HeaderDemo-project-headers.hmap`文件是target中所有头文件的及其路径的映射表。
 
-笔者没有找到hmap的具体生成逻辑的源码（有大佬知道的话麻烦联系下我~），我们可以根据结果来猜测，Xcode会将target目录下的所有.h文件及其地址生成hmap，那Xcode从哪里存的.h文件的地址呢？答案是在工程文件xcodeproj内project.pbxproj文件中的`PBXFileReference section`存了所有源文件的地址，我们在target内添加或者删除文件，修改的也是这个project.pbxproj文件。所以Xcode会将`PBXFileReference section`里的所有.h头文件及其地址生成映射写入hmap中。大家可以删除`PBXFileReference section`内的指定头文件然后重新编译和打印hmap来验证这个猜想。
+笔者没有找到hmap的具体生成逻辑的源码（有大佬知道的话麻烦联系下我~），我们可以根据结果来猜测，Xcode会将工程目录下的所有.h文件及其地址生成hmap，那Xcode从哪里存的.h文件的地址呢？答案是在工程文件xcodeproj内project.pbxproj文件中的`PBXFileReference section`存了所有源文件的地址，我们在target内添加或者删除文件，修改的也是这个project.pbxproj文件。所以Xcode会将`PBXFileReference section`里的所有.h头文件及其地址生成映射写入hmap中。大家可以删除`PBXFileReference section`内的指定头文件然后重新编译和打印hmap来验证这个猜想。
 
 我们知道了Header Map就是头文件和地址的映射之后，我们看一下Clang是怎么通过Header Map查找头文件的。首先我们将上面的Clang命令格式化成更易读的格式。
 
@@ -192,7 +192,7 @@ Clang Module是对框架的抽象描述，而module map则是这个描述的具�
 
 ![](Images/clang源码看import/FoundationModuleMap.png)
 
-这里描述了Foundation框架是一个framework类型的module，它的头文件是伞形头文件Foundation.h，该模块包含的任何内容都将自动重新导出（export *），同时modulemap还支持模块的嵌套定义（module ... { }），这里Foudation描述了所有的子模块包含的内容都自动导出。更多的modulemap的语法可以看下[Clang官方文档](https://clang.llvm.org/docs/Modules.html#module-map-language)。
+这里描述了Foundation框架是一个framework类型的module，它的头文件是伞形头文件Foundation.h，该模块包含的任何内容都将自动重新导出（export *），同时modulemap还支持模块的嵌套定义（module ... { }），module *会将所有的头文件都创建一个子模块，这里Foudation描述了所有的子模块包含的内容都自动导出。更多的modulemap的语法可以看下[Clang官方文档](https://clang.llvm.org/docs/Modules.html#module-map-language)。
 
 ### @import
 
@@ -202,7 +202,7 @@ Clang Module是对框架的抽象描述，而module map则是这个描述的具�
 
 从预编译结果看，通过Clang Modules进行头文件引入，并不是复制粘贴，所以就避免了宏污染的问题。
 
-我们需要注意的一点是，`@import ...;`的方式仅仅适用于能够以Clang Module引入的框架，如果引用不支持Clang Module的框架编译器会报Module '...' not found的错误。而`#import <...>`的好处在于我们可以在Clang Module和非Module的情况下切换。
+我们需要注意的一点是，`@import ...;`的方式仅仅适用于能够以Clang Module引入的框架，如果引用不支持Clang Module的框架编译器会报Module '...' not found的错误。`@import ...;`的好处是不需要查找.h头文件直接查找Module，而`#import <...>`的好处在于我们可以在Clang Module和非Module的情况下切换。
 
 ## 从Clang源码深入头文件查找
 
@@ -258,13 +258,30 @@ Clang要进行头文件的查找，必然需要一些路径。Xcode会通过Buil
 
 ![](Images/clang源码看import/clangLookupFileCurDir.png)
 
-（调用`getFileAndSuggestModule`在Includer中查找头文件，`#import <.../...>`引入的头文件isAngled是true）
+（通过`#import <.../...>`和`#import <...>`引入的头文件时isAngled是true）
 
-从上图的注释也可以看到，`#import <.../...>`引入的头文件会跳过这一步。如果当前目录没有找到的话，才会通过路径列表`SearchList`进行一个个的查找。为什么要先查找一次当前路径，我猜测是因为兼容没有启用Header Map的逻辑，因为不启用Header Map就是基于当前目录查找头文件。
+从上图的注释也可以看到，通过尖括号<>引入的头文件会跳过这一步。最终会调用到`getFileAndSuggestModule`这个方法。这个方法做了两个事情，一个是获取头文件，另一个是Suggest Module。
+
+
+
+这个Suggest Module是用来决定是否要通过Clang Modules的方式来引入头文件。这个方法的最后一个参数`SuggestedModule`是能否通过Clang Modules的方式来引入头文件的关键。
+
+![](Images/clang源码看import/clangIsLoadModule.png)
+
+从上图可以看到，只有头文件存在，并且SuggestedModule有值的时候，才会调用Module加载器（TheModuleLoader）去加载Module。
+
+那么SuggestedModule什么时候会被赋值呢？
+
+
+
+如果当前目录没有找到的话，才会通过路径列表`SearchList`进行一个个的查找。为什么要先查找一次当前路径，我猜测原因有两点
+
+1. 兼容没有启用Header Map的逻辑，因为不启用Header Map就是基于当前目录查找头文件。
+2. 提供一个默认路径，如果没有传入任何搜索路径，可以在默认路径中查找。
 
 查找到头文件之后，还会判断能否以Clang Module的形式引用。这里的判断与后面Normal Dir中的判断是一样的，所以会在后面讲如何判断能否以Clang Module的形式引用。
 
-在`SearchList`查找过程中，对`#import <.../...>`引入的头文件查找做了特殊的处理，会跳过-iquote指定的路径。
+在`SearchList`查找过程中，对`#import <.../...>`和`#import <...>`引入的头文件查找做了特殊的处理，会跳过-iquote指定的路径。
 
 ![](Images/clang源码看import/clangLookupAngleIndex.png)
 
@@ -337,7 +354,7 @@ Normal Dir的头文件查找分为两步，首先将查找路径拼接头文件�
 
 ![](Images/clang源码看import/terminalHmapFrameworkPath.png)
 
-然后在hmap和后续的`SearchList`中查找FrameworkName/FileName，这种情况最后一般都会命中Framework的查找路径。这个机制其实就是Clang帮我们把`#import "FrameworkFileName.h"`自动帮我们补全成了`#import <FrameworkName/FileName.h>`，这也是`#import "..."`为什么也可以引入我们自己创建的Framework的头文件的原因。上面讲过`#import <FrameworkName/FileName.h>`是可以使用Clang Module的特性，所以这种情况使用`#import "FrameworkFileName.h"`也是可以使用Clang Module特性的。有的文章说Clang Module只能通过`#import <...>`和`@import ...;`方式来使用也是不严谨的。
+然后在hmap和后续的`SearchList`中查找FrameworkName/FileName，这种情况最后一般都会命中Framework的查找路径。这个机制其实就是Clang帮我们把`#import "FrameworkFileName.h"`自动帮我们补全成了`#import <FrameworkName/FileName.h>`，这也是`#import "..."`为什么也可以引入我们自己创建的Framework的头文件的原因。上面讲过`#import <FrameworkName/FileName.h>`是可以使用Clang Module的特性，所以这种情况使用`#import "FrameworkFileName.h"`也是可以使用Clang Module特性的。有的文章说Clang Module只能通过`#import <.../...>`和`@import ...;`方式来引入也是不严谨的。
 
 ### Xcode Preprocess的bug
 
@@ -359,7 +376,17 @@ Xcode Preprocess的结果不仅不是CLang Module引入，eat方法还被宏污�
 
 ###  @import
 
-未完待续
+对于`@import`，Clang在词法分析阶段（Lex）与`#`开头的预编译指令的词法分析是分开的。
+
+![](Images/clang源码看import/clangLexAt.png)
+
+识别出是`@import`开头，在Lex阶段会最终进入到`LexAfterModuleImport`方法，进行Module的加载。
+
+做了一个简单的流程图来表示`@import ...;`这种头文件引用的查找过程。
+
+![](Images/clang源码看import/clangAtImportFlow.png)
+
+
 
 ### Cocoapods
 
