@@ -1,6 +1,6 @@
 # 从Clang源码深入了解Objective-C中的import
 
-关于iOS中的import，对于Objective-C来说，有`#import "..."`、`#import <...>`、`@import ...;`这几种方式，那么你了解这些import的区别吗？了解他们底层是如何查找头文件的吗？Clang Module只能通过`#import <...>`和`@import ...;`的方式来引用吗？本文将从Clang源码的角度，详细讲解Objective-C中的头文件引用。
+对于Objective-C中的头文件引用，有`#import "..."`、`#import <...>`、`@import ...;`这几种方式，那么你了解这些import的区别吗？了解他们底层是如何查找头文件的吗？Clang Module只能通过`#import <...>`和`@import ...;`的方式来引用吗？本文将从Clang源码的角度，详细讲解Objective-C中的头文件引用。
 
 本文分为两部分内容，[第一部分](##Objective-C中的头文件引用)梳理一下Objective-C的头文件引用，同时介绍Header Map、Clang Modules、Module Map的概念。[第二部分](##从Clang源码深入头文件查找)通过Clang源码来深入研究Objective-C的头文件查找过程。
 
@@ -12,13 +12,26 @@
 
 在Objective-C中同一个target下我们可以使用的头文件引用方式有`#include "..."`、`#import "..."`这两种方式，它们做的事情其实就是简单的复制粘贴，将目标.h文件中的内容一字不落地拷贝到当前文件中。
 
-我们可以创建一个简单的Xcode工程来验证一下，我们在同一个target下创建两个Objective-C类。（关于图片中的报错我们这里先忽略，后面会补充这里的内容）
+我们可以创建一个简单的Xcode工程来验证一下，我们在同一个target下创建两个Objective-C类。（关于这两个类没有继承NSObject先忽略，后面会补充）
 
-![](Images/clang源码看import/AClass.png)
+```objective-c
+// AClass.h
+@interface AClass
+@property (assign) int a;
+@property (assign) int b;
+@end
 
-![](Images/clang源码看import/BClass.png)
+// BClass.m
+#include "BClass.h"
+#import "AClass.h"
+@implementation BClass
+-(void) doSomething {
+    NSLog(@"doSomething");
+}
+@end
+```
 
-我们在BClass的.m文件中分别使用`#include`和`#import`的方式引入AClass和BClass的头文件。然后我们使用Xcode的preprocess进行预编译的处理。
+我们在BClass.m文件中分别使用`#include`和`#import`的方式引入AClass和BClass的头文件。然后我们使用Xcode的Preprocess功能查看预编译后的结果。
 
 ![](Images/clang源码看import/xcodePreprocess.png)
 
@@ -84,7 +97,14 @@
 
 我们来修复一下最开始AClass.h中的报错，众所周知，Objective-C的类都需要直接或者间接的继承自基类NSObject，而NSObject是属于苹果Foundation框架中的，我们引用框架中的头文件一般都是使用`#import <...>`的方式来进行引用，所以我们把AClass.h和BClass.h补充完整。
 
-![](Images/clang源码看import/AClassFoundation.png)
+```objective-c
+// AClass.h
+#import <Foundation/Foundation.h>
+@interface AClass : NSObject
+@property (assign) int a;
+@property (assign) int b;
+@end
+```
 
 然后我们重新对BClass.m文件进行Preprocess操作看下结果。
 
@@ -100,11 +120,31 @@
 
 还有一个不太容易发现的问题就是宏污染问题（健壮性）。按上面的例子来说，我们创建一个PodA的库并集成进我们的主工程中（这里使用Cocoapods来创建和集成），然后再PodA库中添加一个Objective-C的类PodAClassA，在PodAClassA.h中声明一个eat方法。
 
-![](Images/clang源码看import/PodAClassA.png)
+```objective-c
+// PodA/PodAClassA.h
+#import <Foundation/Foundation.h>
+@interface PodAClassA : NSObject
+-(void)eat;
+@end
+```
 
 BClass.m中通过`#import <PodA/PodAClassA.h>`引入头文件，并且在最上方定义一个eat的宏。
 
-![](Images/clang源码看import/BClassDefined.png)
+```objective-c
+// BClass.m
+#define eat NSLog(@"eat");
+
+#include "BClass.h"
+#import "AClass.h"
+#import <PodA/PodAClassA.h>
+
+@implementation BClass
+-(void) doSomething {
+	  eat
+    NSLog(@"doSomething");
+}
+@end
+```
 
 经过xcode的预编译处理，我们看下BClass的预编译后的结果。
 
@@ -124,7 +164,11 @@ BClass.m中通过`#import <PodA/PodAClassA.h>`引入头文件，并且在最上�
 
 我们在工程中创建一个pch文件，将`<Foundation/Foundation.h>`和`<PodA/PodAClassA.h>`放入pch文件内。
 
-![](Images/clang源码看import/pch.png)
+```objective-c
+// PrefixHeader.h
+#import <Foundation/Foundation.h>
+#import <PodA/PodAClassA.h>
+```
 
 然后在主工程中删除所有的`#import <Foundation/Foundation.h>`和`#import <PodA/PodAClassA.h> `，然后再去看下BClass.m的预编译结果。
 
@@ -244,7 +288,7 @@ Clang要进行头文件的查找，必然需要一些路径。Xcode会通过Buil
 
 ### 头文件查找
 
-我们可能会简单的认为`#import`的头文件查找就是Clang通过路径列表`SearchList`一个个的查找头文件，其实并没有我们想的这么简单。我们还可能会认为`#import "..."`与Clang Module无关，其实这也是不正确的。我们来详细看下Clang是怎么查找头文件的。
+我们可能会简单的认为`#import`的头文件查找就是Clang通过路径列表`SearchList`一个个的查找头文件，其实并没有我们想的这么简单。我们来详细看下Clang是怎么查找头文件的。
 
 做了一个简单的流程图来表示`#import "..."`、`#import ".../..."`、`#import <...>`、`#import <.../...>`这四种头文件引用的查找过程。
 
@@ -262,24 +306,13 @@ Clang要进行头文件的查找，必然需要一些路径。Xcode会通过Buil
 
 从上图的注释也可以看到，通过尖括号<>引入的头文件会跳过这一步。最终会调用到`getFileAndSuggestModule`这个方法。这个方法做了两个事情，一个是获取头文件，另一个是Suggest Module。
 
-
-
 这个Suggest Module是用来决定是否要通过Clang Modules的方式来引入头文件。这个方法的最后一个参数`SuggestedModule`是能否通过Clang Modules的方式来引入头文件的关键。
 
 ![](Images/clang源码看import/clangIsLoadModule.png)
 
-从上图可以看到，只有头文件存在，并且SuggestedModule有值的时候，才会调用Module加载器（TheModuleLoader）去加载Module。
+从上图可以看到，只有头文件存在，并且SuggestedModule有值的时候，才会调用Module加载器（TheModuleLoader）去加载Module。那么SuggestedModule什么时候会被赋值呢？以及SuggestModule是内部做了什么事情呢？我们在[能否以Clang Modules形式引入](####能否以Clang Modules形式引入)一节会单独讲。
 
-那么SuggestedModule什么时候会被赋值呢？
-
-
-
-如果当前目录没有找到的话，才会通过路径列表`SearchList`进行一个个的查找。为什么要先查找一次当前路径，我猜测原因有两点
-
-1. 兼容没有启用Header Map的逻辑，因为不启用Header Map就是基于当前目录查找头文件。
-2. 提供一个默认路径，如果没有传入任何搜索路径，可以在默认路径中查找。
-
-查找到头文件之后，还会判断能否以Clang Module的形式引用。这里的判断与后面Normal Dir中的判断是一样的，所以会在后面讲如何判断能否以Clang Module的形式引用。
+如果当前目录没有找到的话，才会通过路径列表`SearchList`进行一个个的查找。为什么要先查找一次当前路径，我猜测原因是提供一个默认路径，如果没有传入任何搜索路径，可以在默认路径中查找。
 
 在`SearchList`查找过程中，对`#import <.../...>`和`#import <...>`引入的头文件查找做了特殊的处理，会跳过-iquote指定的路径。
 
@@ -305,34 +338,37 @@ Framework Dir的头文件查找首先先会校验要查找的头文件是否是`
 
 ![](Images/clang源码看import/clangFrameworkDirNposCheck.png)
 
-然后校验Framework是否存在。将满足FrameworkName/FileName.h格式的头文件的FrameworkName和FileName.h拆分出来，并将Dir的路径+FrameworkName+.framework/拼接成Framework的绝对路径，验证该Framework是否存在。
+将满足FrameworkName/FileName.h格式的头文件的FrameworkName和FileName.h拆分出来，并将Dir的路径+FrameworkName+.framework/拼接成Framework的绝对路径，验证该Framework是否存在。
 
 验证Framework存在后，开始查找FileName.h是否包含在Framework中，会分别查找Framework内的Headers和PrivateHeaders两个文件夹。
 
 ![](Images/clang源码看import/clangLookupFrameworkHeader.png)
 
-如果查找到了头文件就会走到最后一步判断能否以Clang Module的形式引用。首先先判断缓存中的Module是否存在，如果没有命中缓存就走正常的Module加载过程。先去查找Module Map文件，分别按顺序查找FrameworkName.framework/Modules/module.modulemap、FrameworkName.framework/module.map、FrameworkName.framework/Modules/module.private.modulemap。
-
-![](Images/clang源码看import/clangLookupModuleMap.png)
-
-然后解析和加载Module Map文件，解析期间还会验证Module Map的header或者umbrella header是否包含FileName.h。最后一切顺利，就将Module Map文件路径、生成的Module等都存入缓存中，避免重复的Module解析和加载。
-
 #### Normal Dir
 
-Normal Dir的头文件查找分为两步，首先将查找路径拼接头文件名字组成头文件的绝对路径，然后查找头文件是否存在。
+```c++
+// Lex/HeaderSearch.cpp DirectoryLookup::LookupFile
+if (isNormalDir()) {
+    // Concatenate the requested file onto the directory.
+    TmpDir = getDir()->getName();
+    llvm::sys::path::append(TmpDir, Filename);
+    if (SearchPath) {
+      StringRef SearchPathRef(getDir()->getName());
+      SearchPath->clear();
+      SearchPath->append(SearchPathRef.begin(), SearchPathRef.end());
+    }
+    if (RelativePath) {
+      RelativePath->clear();
+      RelativePath->append(Filename.begin(), Filename.end());
+    }
 
-![](Images/clang源码看import/clangNormalDirLookupFile.png)
+    return HS.getFileAndSuggestModule(TmpDir, IncludeLoc, getDir(),
+                                      isSystemHeaderDirectory(),
+                                      RequestingModule, SuggestedModule);
+  }
+```
 
-(图中的FileName就是拼接好的绝对路径地址)
-
-如果头文件存在，Clang还会进一步判断能否以Clang Module的形式引用。
-
-![](Images/clang源码看import/clangLoadNormalDirModule.png)
-
-这里的判断能否以Clang Module的形式引用的过程，与Framework Dir中的过程有一些区别。
-
-* Normal Dir的不会去找Module的缓存。我猜测是因为Normal Dir查找的大多都不是Framework的头文件，Framework Dir的Module缓存可以以FrameworkName作为Key缓存整个Framework的Module，整个Framework内任意的头文件查找都可以命中缓存，而Normal Dir以头文件名为Key缓存整个Module的话效率太低了，没什么意义。
-* 在查找Module Map文件时，因为不是Framework路径，所以不会查找Modules/目录，只会查找Normal Dir/module.map和Normal Dir/module.modulemap这两个路径。
+Normal Dir中调用了一个熟悉的方法getFileAndSuggestModule，这个方法就是在查找`SearchList`之前，先从当前文件夹查找时调用的方法。
 
 #### Header Map
 
@@ -354,7 +390,45 @@ Normal Dir的头文件查找分为两步，首先将查找路径拼接头文件�
 
 ![](Images/clang源码看import/terminalHmapFrameworkPath.png)
 
-然后在hmap和后续的`SearchList`中查找FrameworkName/FileName，这种情况最后一般都会命中Framework的查找路径。这个机制其实就是Clang帮我们把`#import "FrameworkFileName.h"`自动帮我们补全成了`#import <FrameworkName/FileName.h>`，这也是`#import "..."`为什么也可以引入我们自己创建的Framework的头文件的原因。上面讲过`#import <FrameworkName/FileName.h>`是可以使用Clang Module的特性，所以这种情况使用`#import "FrameworkFileName.h"`也是可以使用Clang Module特性的。有的文章说Clang Module只能通过`#import <.../...>`和`@import ...;`方式来引入也是不严谨的。
+然后在hmap和后续的`SearchList`中查找FrameworkName/FileName，这种情况最后一般都会命中Framework的查找路径。这个机制其实就是Clang帮我们把`#import "FrameworkFileName.h"`自动帮我们补全成了`#import <FrameworkName/FileName.h>`，这也是`#import "..."`为什么也可以引入我们自己创建的Framework的头文件的原因。
+
+### 能否以Clang Modules形式引入
+
+我们还可能会认为`#import "..."`与Clang Module无关，其实这也是不正确的。
+
+#### Framework Dir
+
+如果查找到了头文件，去判断当前文件目录是否是.framework结尾，如果不是，就递归查找父级目录，直到最终找到.framework结尾的文件夹。例如头文件的绝对路径是/Users/poxxhub/demo/Pods/AFNetworking.framework/Headers/AFNetworking.h，会按照Headers.framework -> AFNetworking.framework -> Pods.framework -> ... 依次判断文件夹是否存在。
+
+最后会根据有没有递归找到.framework文件夹来分别执行不同的逻辑，判断能否以Clang Module的形式引用。
+
+* 如果没有找到.framework结尾的文件夹，在头文件的父文件夹下查找Module Map文件，然后解析加载Module Map文件
+* 
+
+首先先判断缓存中的Module是否存在，如果没有命中缓存就走正常的Module加载过程。先去查找Module Map文件，分别按顺序查找FrameworkName.framework/Modules/module.modulemap、FrameworkName.framework/module.map、FrameworkName.framework/Modules/module.private.modulemap。
+
+![](Images/clang源码看import/clangLookupModuleMap.png)
+
+然后解析和加载Module Map文件，解析期间还会验证Module Map的header或者umbrella header是否包含FileName.h。最后一切顺利，就将Module Map文件路径、生成的Module等都存入缓存中，避免重复的Module解析和加载。
+
+#### Normal Dir
+
+![](Images/clang源码看import/clangNormalDirLookupFile.png)
+
+(图中的FileName就是拼接好的绝对路径地址)
+
+如果头文件存在，Clang还会进一步判断能否以Clang Module的形式引用。
+
+![](Images/clang源码看import/clangLoadNormalDirModule.png)
+
+这里的判断能否以Clang Module的形式引用的过程，与Framework Dir中的过程有一些区别。
+
+* Normal Dir的不会去找Module的缓存。我猜测是因为Normal Dir查找的大多都不是Framework的头文件，Framework Dir的Module缓存可以以FrameworkName作为Key缓存整个Framework的Module，整个Framework内任意的头文件查找都可以命中缓存，而Normal Dir以头文件名为Key缓存整个Module的话效率太低了，没什么意义。
+* 在查找Module Map文件时，因为不是Framework路径，所以不会查找Modules/目录，只会查找Normal Dir/module.map和Normal Dir/module.modulemap这两个路径。
+
+#### Header Map
+
+上面讲过`#import <FrameworkName/FileName.h>`是可以使用Clang Module的特性，所以这种情况使用`#import "FrameworkFileName.h"`也是可以使用Clang Module特性的。有的文章说Clang Module只能通过`#import <.../...>`和`@import ...;`方式来引入也是不严谨的。
 
 ### Xcode Preprocess的bug
 
